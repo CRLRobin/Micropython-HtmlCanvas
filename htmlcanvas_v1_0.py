@@ -182,7 +182,7 @@ class HtmlCanvas:
         """
         return html
     
-    def render(self, title="Bias Battle", refresh=False):
+    def render(self, title="template", refresh=False):
         script_block = "\n".join([f"<script>{s}</script>" for s in self.scripts])
         body = "\n".join(self.elements)
 
