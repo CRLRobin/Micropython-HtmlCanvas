@@ -1,5 +1,5 @@
 #v2.0
-import socket
+import socket, os
 
 class HtmlCanvas:
     def __init__(self, canvas_id, width=800, height=600, scale=1.0):
@@ -61,18 +61,27 @@ class HtmlCanvas:
     def get_input(self, field):
         return self.input_data.get(field, "")
     
-    def upload_box(self, box_id, x, y, width=300, label="Upload", accept="*/*", save_to="uploads"):
+    def upload_box(self, box_id, x, y, width=300, label="Choose file", button_text="Upload",
+               accept="*/*", save_to="uploads"):
         html = f'''
-        <label for="{box_id}" style="position:absolute; left:{x}px; top:{y}px; font-size:16px;">{label}</label>
         <input type="file" id="{box_id}" name="{box_id}" accept="{accept}"
-               style="position:absolute; left:{x}px; top:{y+25}px; width:{width}px;"
-               onchange="send_upload_{box_id}()">
+               style="position:absolute; left:{x}px; top:{y}px; width:{width}px;">
+        <button onclick="send_upload_{box_id}()" 
+                style="position:absolute; left:{x}px; top:{y+25}px;">
+            {button_text}
+        </button>
+        <div id="{box_id}_status" 
+             style="position:absolute; left:{x+100}px; top:{y+25}px; font-size:16px; color:green;"></div>
         '''
+        
         script = f'''
         function send_upload_{box_id}() {{
             const fileInput = document.getElementById("{box_id}");
             const file = fileInput.files[0];
-            if (!file) return;
+            if (!file) {{
+                alert("Please choose a file！");
+                return;
+            }}
 
             const formData = new FormData();
             formData.append("{box_id}", file);
@@ -84,20 +93,24 @@ class HtmlCanvas:
                     "X-Save-To": "{save_to}"
                 }},
                 body: formData
-            }}).then(r => r.text()).then(html => {{
-                document.body.innerHTML = html;
+            }})
+            .then(r => r.text())
+            .then(html => {{
+                document.getElementById("{box_id}_status").innerText = "Upload succeeded.";
             }});
         }}
         '''
+        
         self.elements.append(html)
         self.scripts.append(script)
-
-    def button(self, label, x, y, trigger_name, img_src=None, width=200):
-        xs, ys = self._scale(x), self._scale(y)
-        w = self._scale(width)
+    
+    def on_trigger(self, name, func):
+        self.triggers[name] = func
+    
+    def call_function(self, name, func):
         js = f"""
-        function trigger_{trigger_name}() {{
-            fetch('/trigger?name={trigger_name}')
+        function trigger_{name}() {{
+            fetch('/trigger?name={name}')
               .then(r => r.text())
               .then(html => {{
                   document.body.innerHTML = html;
@@ -105,23 +118,29 @@ class HtmlCanvas:
         }}
         """
         self.scripts.append(js)
+        
+        self.on_trigger(name, func)
+        
+        return f"trigger_{name}()"
 
+    def button(self, label, x, y, onclick, img_src=None, width=200):
+        xs, ys = self._scale(x), self._scale(y)
+        w = self._scale(width)
+        
         if img_src:
             html = f'''
-            <button onclick="trigger_{trigger_name}()" style="position:absolute; left:{xs}px; top:{ys}px; border:none; padding:0; background:none;">
+            <button onclick="{onclick}" style="position:absolute; left:{xs}px; top:{ys}px; border:none; padding:0; background:none;">
                 <img src="{img_src}" width="{w}">
             </button>
             '''
         else:
             html = f'''
-            <button onclick="trigger_{trigger_name}()" style="position:absolute; left:{xs}px; top:{ys}px;">
+            <button onclick="{onclick}" style="position:absolute; left:{xs}px; top:{ys}px;">
                 {label}
             </button>
             '''
         self.elements.append(html)
 
-    def on_trigger(self, name, func):
-        self.triggers[name] = func
 
     def handle_trigger(self, name):
         if name in self.triggers:
@@ -162,37 +181,6 @@ class HtmlCanvas:
         return self.key_data
 
     
-    def old_render(self, title="page", refresh=False):
-        script_block = "\n".join([f"<script>{s}</script>" for s in self.scripts])
-        body = "\n".join(self.elements)
-
-        refresh_script = ""
-        if refresh:
-            refresh_script = """
-            <script>
-            (function() {
-              if (!sessionStorage.getItem("refreshed")) {
-                sessionStorage.setItem("refreshed", "true");
-                location.replace(location.href);
-              }
-            })();
-            </script>
-            """
-
-        html = f"""
-        <html>
-        <head>
-          <title>{title}</title>
-          {refresh_script}
-        </head>
-        <body style="position:relative; width:{self.width}px; height:{self.height}px;">
-          {body}
-          {script_block}
-        </body>
-        </html>
-        """
-        return html
-    
     def render(self, title=""):
         script_block = "\n".join([f"<script>{s}</script>" for s in self.scripts])
         body = "\n".join(self.elements)
@@ -219,8 +207,6 @@ class HtmlCanvas:
         </html>
         """
         return html
-
-
 
 
     def handle_request(self, req, client):
@@ -284,7 +270,7 @@ class HtmlCanvas:
                 if filename and content:
                     path = f"{save_to}/{filename}"
                     with open(path, "wb") as f:
-                        f.write(content.encode())
+                        f.write(content.encode(errors="ignore"))
 
                     response_canvas = HtmlCanvas(800, 600)
                     response_canvas.draw_text(f"File '{filename}' saved to '{save_to}'", x=50, y=100, font_size=20, color="green")
@@ -323,7 +309,7 @@ class HtmlCanvas:
 class HtmlServer:
     def __init__(self, port=8080, static_dir="static", default_canvas=None):
         self.port = port
-        self.static_dir = static_dir
+        self.dir = static_dir
         self.canvas_pool = []
         self.path = "__INIT__"
         self.default_canvas = default_canvas
@@ -366,7 +352,7 @@ class HtmlServer:
         except:
             return False
 
-    def run(self):
+    def _run(self):
         client, _ = self.server.accept()
         req = client.recv(1024).decode()
         path = self._extract_path(req)
@@ -387,5 +373,18 @@ class HtmlServer:
             client.send(html.encode())
 
         client.close()
+    
+    def run(self, canvas):
+        client, _ = self.server.accept()
+        req = client.recv(1024).decode()
 
+        if canvas.handle_static_file(req, client, self.dir):
+            pass
+        elif canvas.handle_request(req, client):
+            pass
+        else:
+            html = canvas.render()
+            client.send("HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n".encode())
+            client.send(html.encode())
 
+        client.close()
